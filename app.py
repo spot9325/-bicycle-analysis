@@ -43,19 +43,50 @@ st.header("1. 자치구별 생활형 따릉이 의존도 분석")
 
 # [SQL] 이용정보와 대여소 테이블을 조인하여 자치구별 통계 산출
 query_1 = """
-SELECT
-    D."자치구" AS 자치구,
-    SUM(I."이용건수") AS 총이용건수,
-    ROUND(SUM(I."이용시간") * 1.0 / SUM(I."이용건수"), 2) AS 건당평균이용시간,
-    ROUND(SUM(I."이동거리") * 1.0 / SUM(I."이용건수"), 2) AS 건당평균이동거리
-FROM "이용정보" I
-JOIN "대여소" D
-    ON I."대여소번호" = D."대여소번호"
-GROUP BY D."자치구"
-ORDER BY 총이용건수 DESC;
+SELECT *
+FROM 대여소;
 """
 
-df_district = run_query(query_1)
+query_use = """
+SELECT *
+FROM 이용정보;
+"""
+
+df_station = run_query(query_1)
+df_use = run_query(query_use)
+
+# 대여소 테이블 컬럼명 강제 정리
+df_station = df_station.rename(columns={
+    df_station.columns[0]: "대여소번호",
+    df_station.columns[2]: "자치구"
+})
+
+# 이용정보 테이블 컬럼명 강제 정리
+df_use = df_use.rename(columns={
+    df_use.columns[2]: "대여소번호"
+})
+
+df_district = df_use.merge(
+    df_station[["대여소번호", "자치구"]],
+    on="대여소번호",
+    how="inner"
+)
+
+df_district = df_district.groupby("자치구").agg(
+    총이용건수=("이용건수", "sum"),
+    총이용시간=("이용시간", "sum"),
+    총이동거리=("이동거리", "sum")
+).reset_index()
+
+df_district["건당평균이용시간"] = (
+    df_district["총이용시간"] / df_district["총이용건수"]
+).round(2)
+
+df_district["건당평균이동거리"] = (
+    df_district["총이동거리"] / df_district["총이용건수"]
+).round(2)
+
+df_district = df_district.sort_values("총이용건수", ascending=False)
 
 # 컬럼을 나누어 시각화와 SQL/인사이트 배치
 col1, col2 = st.columns([2, 1])
