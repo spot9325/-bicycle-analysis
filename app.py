@@ -37,15 +37,16 @@ st.header("1. 자치구별 생활형 따릉이 의존도 분석")
 
 # [SQL] 이용정보와 대여소 테이블을 조인하여 자치구별 통계 산출
 query_1 = """
-SELECT 
-    d.자치구,
-    SUM(u.이용건수) AS 총이용건수,
-    ROUND(AVG(u.이용시간), 2) AS 평균이용시간,
-    ROUND(AVG(u.이동거리), 2) AS 평균이동거리
-FROM 이용정보 u
-JOIN 대여소 d ON u.대여소번호 = d.대여소번호
-GROUP BY d.자치구
-ORDER BY 총이용건수 DESC
+SELECT
+    D.자치구,
+    SUM(I.이용건수) AS 총이용건수,
+    ROUND(SUM(I.이용시간) * 1.0 / SUM(I.이용건수), 2) AS 건당평균이용시간,
+    ROUND(SUM(I.이동거리) * 1.0 / SUM(I.이용건수), 2) AS 건당평균이동거리
+FROM 이용정보 I
+JOIN 대여소 D
+    ON I.대여소번호 = D.대여소번호
+GROUP BY D.자치구
+ORDER BY 총이용건수 DESC;
 """
 
 df_district = run_query(query_1)
