@@ -26,8 +26,14 @@ if not os.path.exists(db_path):
 
 # SQL 쿼리를 실행하고 결과를 데이터프레임으로 가져오는 함수
 def run_query(query):
-    with sqlite3.connect(db_path) as conn:
-        return pd.read_sql(query, conn)
+    try:
+        with sqlite3.connect(db_path) as conn:
+            return pd.read_sql(query, conn)
+    except Exception as e:
+        st.error("SQL 실행 중 오류가 발생했습니다.")
+        st.code(query, language="sql")
+        st.exception(e)
+        st.stop()
 
 # ---------------------------------------------------------
 # 1. 자치구별 생활형 따릉이 의존도 분석
