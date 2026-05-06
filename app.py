@@ -4,36 +4,70 @@ import sqlite3
 import os
 import plotly.express as px
 
-# --- [설정] 페이지 레이아웃 및 제목 설정 ---
 st.set_page_config(
     page_title="서울시 따릉이 데이터 분석 대시보드",
-    layout="wide", # 화면을 넓게 사용하도록 설정
+    layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("🚲 서울시 따릉이 이용 현황 분석 대시보드")
+st.title("서울시 따릉이 이용 현황 분석 대시보드")
 st.markdown("""
 이 대시보드는 따릉이 공공데이터를 활용하여 **자치구별 의존도, 이용자 특성, 대여권별 패턴**을 분석합니다.
-데이터를 통해 따릉이가 서울 시민의 삶에 어떻게 녹아있는지 확인해보세요!
 """)
 
-# --- [DB 연결] 데이터베이스 파일 존재 여부 확인 ---
-db_path = 'bicycle.db'
+db_path = "bicycle.db"
 
 if not os.path.exists(db_path):
-    st.error(f"⚠️ '{db_path}' 파일이 폴더 내에 존재하지 않습니다. 데이터베이스 파일을 확인해주세요.")
-    st.stop() # 파일이 없으면 여기서 실행 중단
+    st.error("'bicycle.db' 파일이 폴더 안에 없습니다.")
+    st.stop()
 
-# SQL 쿼리를 실행하고 결과를 데이터프레임으로 가져오는 함수
-def run_query(query):
-    try:
-        with sqlite3.connect(db_path) as conn:
-            return pd.read_sql(query, conn)
-    except Exception as e:
-        st.error("SQL 실행 중 오류가 발생했습니다.")
-        st.code(query, language="sql")
-        st.exception(e)
-        st.stop()
+def load_table(table_name):
+    conn = sqlite3.connect(db_path)
+    df = pd.read_sql(f'SELECT * FROM "{table_name}"', conn)
+    conn.close()
+
+    # 컬럼명 앞뒤 공백 제거 + 중복 컬럼 제거
+    df.columns = df.columns.astype(str).str.strip()
+    df = df.loc[:, ~df.columns.duplicated()]
+    return df
+
+def normalize_id(x):
+    if pd.isna(x):
+        return None
+    x = str(x).strip()
+    if x.endswith(".0"):
+        x = x[:-2]
+    return x.lstrip("0") or "0"
+
+# 데이터 불러오기
+df_station = load_table("대여소")
+df_use = load_table("이용정보")
+
+# 대여소 컬럼명 안전 정리
+if "대여소번호" not in df_station.columns:
+    df_station = df_station.rename(columns={df_station.columns[0]: "대여소번호"})
+
+if "자치구" not in df_station.columns:
+    df_station = df_station.rename(columns={df_station.columns[2]: "자치구"})
+
+# 이용정보 컬럼명 안전 정리
+if "대여소번호" not in df_use.columns:
+    df_use = df_use.rename(columns={df_use.columns[2]: "대여소번호"})
+
+# 숫자형 변환
+for col in ["이용건수", "이용시간", "이동거리"]:
+    df_use[col] = pd.to_numeric(df_use[col], errors="coerce").fillna(0)
+
+# 대여소번호 형식 통일
+df_station["대여소번호"] = df_station["대여소번호"].apply(normalize_id)
+df_use["대여소번호"] = df_use["대여소번호"].apply(normalize_id)
+
+# 대여소번호 중복 제거 후 자치구 붙이기
+df_station_clean = df_station[["대여소번호", "자치구"]].dropna()
+df_station_clean = df_station_clean.drop_duplicates(subset=["대여소번호"])
+
+station_map = dict(zip(df_station_clean["대여소번호"], df_station_clean["자치구"]))
+df_use["자치구"] = df_use["대여소번호"].map(station_map)
 
 # ---------------------------------------------------------
 # 1. 자치구별 생활형 따릉이 의존도 분석
@@ -41,40 +75,7 @@ def run_query(query):
 st.divider()
 st.header("1. 자치구별 생활형 따릉이 의존도 분석")
 
-# [SQL] 이용정보와 대여소 테이블을 조인하여 자치구별 통계 산출
-query_1 = """
-SELECT *
-FROM 대여소;
-"""
-
-query_use = """
-SELECT *
-FROM 이용정보;
-"""
-
-df_station = run_query(query_1)
-df_use = run_query(query_use)
-
-# 대여소 테이블 컬럼명 강제 정리
-df_station = df_station.rename(columns={
-    df_station.columns[0]: "대여소번호",
-    df_station.columns[2]: "자치구"
-})
-
-# 이용정보 테이블 컬럼명 강제 정리
-df_use = df_use.rename(columns={
-    df_use.columns[2]: "대여소번호"
-})
-df_station = df_station.drop_duplicates(subset=["대여소번호"])
-df_use = df_use.drop_duplicates(subset=["대여소번호"])
-df_station = df_station.drop_duplicates(subset=["대여소번호"])
-df_district = df_use.merge(
-    df_station[["대여소번호", "자치구"]],
-    on="대여소번호",
-    how="inner"
-)
-
-df_district = df_district.groupby("자치구").agg(
+df_district = df_use.dropna(subset=["자치구"]).groupby("자치구").agg(
     총이용건수=("이용건수", "sum"),
     총이용시간=("이용시간", "sum"),
     총이동거리=("이동거리", "sum")
@@ -90,33 +91,43 @@ df_district["건당평균이동거리"] = (
 
 df_district = df_district.sort_values("총이용건수", ascending=False)
 
-# 컬럼을 나누어 시각화와 SQL/인사이트 배치
+query_1 = """
+SELECT
+    D.자치구,
+    SUM(I.이용건수) AS 총이용건수,
+    ROUND(SUM(I.이용시간) * 1.0 / SUM(I.이용건수), 2) AS 건당평균이용시간,
+    ROUND(SUM(I.이동거리) * 1.0 / SUM(I.이용건수), 2) AS 건당평균이동거리
+FROM 이용정보 I
+JOIN 대여소 D
+ON I.대여소번호 = D.대여소번호
+GROUP BY D.자치구
+ORDER BY 총이용건수 DESC;
+"""
+
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    # 이용건수 기준 가로 막대 차트
     fig1 = px.bar(
-        df_district, 
-        x='총이용건수', 
-        y='자치구', 
-        orientation='h',
-        title="자치구별 총 이용건수 (내림차순)",
-        color='총이용건수',
-        color_continuous_scale='Blues'
+        df_district,
+        x="총이용건수",
+        y="자치구",
+        orientation="h",
+        title="자치구별 총 이용건수",
+        color="총이용건수",
+        color_continuous_scale="Blues"
     )
-    fig1.update_layout(yaxis={'categoryorder':'total ascending'}) # 보기 좋게 정렬
+    fig1.update_layout(yaxis={"categoryorder": "total ascending"})
     st.plotly_chart(fig1, use_container_width=True)
 
 with col2:
-    st.subheader("🔍 사용된 SQL")
-    st.code(query_1, language='sql')
-    
-    st.subheader("💡 분석 인사이트")
-    st.info("""
-    - 이용건수가 상위권인 자치구는 주로 업무 지구나 주거 밀집 지역일 가능성이 높습니다.
-    - 평균 이동거리가 짧으면서 이용건수가 많은 구는 따릉이를 '라스트 마일(지하철역-집)' 이동 수단으로 활발히 활용하고 있음을 보여줍니다.
-    """)
+    st.subheader("사용된 SQL")
+    st.code(query_1, language="sql")
 
+    st.subheader("분석 인사이트")
+    st.info("""
+    - 이용건수가 높은 자치구는 따릉이가 생활 이동수단으로 활발히 활용되는 지역입니다.
+    - 평균 이동거리와 평균 이용시간을 함께 보면 단순 이용량뿐 아니라 이동 목적의 차이도 파악할 수 있습니다.
+    """)
 
 # ---------------------------------------------------------
 # 2. 성별/연령대별 따릉이 핵심 이용층 분석
@@ -124,45 +135,51 @@ with col2:
 st.divider()
 st.header("2. 성별/연령대별 따릉이 핵심 이용층 분석")
 
-# [SQL] 성별과 연령대별로 그룹화하여 이용건수 합산
+df_user = df_use.copy()
+df_user["성별"] = df_user["성별"].fillna("").astype(str).str.strip()
+df_user["연령대코드"] = df_user["연령대코드"].fillna("미상").astype(str).str.strip()
+
+df_user = df_user[df_user["성별"] != ""]
+
+df_user_grouped = df_user.groupby(["성별", "연령대코드"]).agg(
+    총이용건수=("이용건수", "sum")
+).reset_index()
+
+df_user_grouped = df_user_grouped.sort_values("연령대코드")
+
 query_2 = """
-SELECT 
-    성별, 
-    연령대코드, 
+SELECT
+    성별,
+    연령대코드,
     SUM(이용건수) AS 총이용건수
 FROM 이용정보
 WHERE 성별 IS NOT NULL AND 성별 != ''
 GROUP BY 성별, 연령대코드
-ORDER BY 연령대코드
+ORDER BY 연령대코드;
 """
-
-df_user = run_query(query_2)
 
 col3, col4 = st.columns([2, 1])
 
 with col3:
-    # 성별과 연령대를 조합한 그룹 막대 차트
     fig2 = px.bar(
-        df_user,
-        x='연령대코드',
-        y='총이용건수',
-        color='성별',
-        barmode='group',
-        title="성별 및 연령대별 이용 패턴",
-        labels={'연령대코드': '연령대', '총이용건수': '이용건수'}
+        df_user_grouped,
+        x="연령대코드",
+        y="총이용건수",
+        color="성별",
+        barmode="group",
+        title="성별 및 연령대별 이용 패턴"
     )
     st.plotly_chart(fig2, use_container_width=True)
 
 with col4:
-    st.subheader("🔍 사용된 SQL")
-    st.code(query_2, language='sql')
-    
-    st.subheader("💡 분석 인사이트")
-    st.info("""
-    - 특정 성별이나 연령대(예: 2030세대)에 이용이 집중되어 있는지 확인할 수 있습니다.
-    - 성별에 따른 이용건수 차이를 통해 타겟 마케팅이나 안전 교육 대상 설정의 근거로 활용할 수 있습니다.
-    """)
+    st.subheader("사용된 SQL")
+    st.code(query_2, language="sql")
 
+    st.subheader("분석 인사이트")
+    st.info("""
+    - 성별과 연령대별 이용량을 비교하면 따릉이의 핵심 이용자층을 확인할 수 있습니다.
+    - 이용이 집중된 연령대는 향후 안전 캠페인, 요금제 설계, 서비스 개선의 주요 대상이 될 수 있습니다.
+    """)
 
 # ---------------------------------------------------------
 # 3. 대여권 유형별 이용 목적 차이 분석
@@ -170,41 +187,48 @@ with col4:
 st.divider()
 st.header("3. 대여권 유형별 이용 목적 차이 분석")
 
-# [SQL] 대여구분코드(일일권, 정기권 등)에 따른 이용량 및 평균 수치 계산
+df_ticket = df_use.copy()
+df_ticket["대여구분코드"] = df_ticket["대여구분코드"].fillna("미상").astype(str).str.strip()
+
+df_ticket_grouped = df_ticket.groupby("대여구분코드").agg(
+    총이용건수=("이용건수", "sum"),
+    평균이용시간=("이용시간", "mean"),
+    평균이동거리=("이동거리", "mean")
+).reset_index()
+
+df_ticket_grouped["평균이용시간"] = df_ticket_grouped["평균이용시간"].round(1)
+df_ticket_grouped["평균이동거리"] = df_ticket_grouped["평균이동거리"].round(1)
+
 query_3 = """
-SELECT 
+SELECT
     대여구분코드,
     SUM(이용건수) AS 총이용건수,
     ROUND(AVG(이용시간), 1) AS 평균이용시간,
     ROUND(AVG(이동거리), 1) AS 평균이동거리
 FROM 이용정보
-GROUP BY 대여구분코드
+GROUP BY 대여구분코드;
 """
-
-df_ticket = run_query(query_3)
 
 col5, col6 = st.columns([2, 1])
 
 with col5:
-    # 대여구분코드별 평균 이용시간과 이동거리 시각화
-    # 사용자가 보기 편하도록 멀티 셀렉트 기능을 넣을 수도 있지만, 여기선 바로 시각화합니다.
     fig3 = px.bar(
-        df_ticket,
-        x='대여구분코드',
-        y=['평균이용시간', '평균이동거리'],
-        barmode='group',
-        title="대여권 유형별 이용 패턴 비교 (시간 vs 거리)"
+        df_ticket_grouped,
+        x="대여구분코드",
+        y=["평균이용시간", "평균이동거리"],
+        barmode="group",
+        title="대여권 유형별 이용 패턴 비교"
     )
     st.plotly_chart(fig3, use_container_width=True)
 
 with col6:
-    st.subheader("🔍 사용된 SQL")
-    st.code(query_3, language='sql')
-    
-    st.subheader("💡 분석 인사이트")
+    st.subheader("사용된 SQL")
+    st.code(query_3, language="sql")
+
+    st.subheader("분석 인사이트")
     st.info("""
-    - **정기권** 이용자는 이용건수는 많으나 평균 이용시간이 짧은 '출퇴근용' 패턴을 보일 확률이 높습니다.
-    - 반면, **일일권/단체권** 이용자는 이용건수는 적어도 평균 이용시간과 거리가 긴 '레저/관광용' 패턴을 보입니다.
+    - 정기권은 반복적이고 생활형 이동 목적에 가까운 이용 패턴을 보일 수 있습니다.
+    - 일일권은 상대적으로 관광, 여가, 비정기적 이동 목적과 연결될 가능성이 있습니다.
     """)
 
 st.caption("Data Source: 서울특별시 공공자전거 이용정보 DB")
