@@ -65,7 +65,7 @@ df_station = df_station.rename(columns={
 df_use = df_use.rename(columns={
     df_use.columns[2]: "대여소번호"
 })
-
+df_station = df_station.drop_duplicates(subset=["대여소번호"])
 df_district = df_use.merge(
     df_station[["대여소번호", "자치구"]],
     on="대여소번호",
